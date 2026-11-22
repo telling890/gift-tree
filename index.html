@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#05070d" />
+<title>Merry Christmas · Gift Tree</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05070d; }
+  body {
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    color: #f3e6c8;
+    cursor: crosshair;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .hud {
+    position: fixed; inset: 0; pointer-events: none; overflow: hidden;
+    transition: opacity .5s ease;
+  }
+  .hud.hidden { opacity: 0; }
+
+  /* 金色衬线标题 */
+  .title-wrap {
+    position: absolute; left: 0; right: 0; top: 5.5vh;
+    display: flex; flex-direction: column; align-items: center;
+    gap: .7em;
+  }
+  .title {
+    margin: 0;
+    font-family: "Cinzel", "Trajan Pro", "Optima", "Times New Roman", Georgia, serif;
+    font-weight: 500;
+    font-size: clamp(19px, 3.1vw, 44px);
+    letter-spacing: .2em;
+    text-indent: .2em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    background: linear-gradient(180deg, #fff0bf 0%, #ffd066 38%, #f0a63a 62%, #c87a1c 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    filter: drop-shadow(0 0 9px rgba(255, 184, 70, .55)) drop-shadow(0 0 26px rgba(255, 140, 30, .35));
+    animation: titleGlow 7s ease-in-out infinite;
+  }
+  @keyframes titleGlow {
+    0%, 100% { filter: drop-shadow(0 0 8px rgba(255,184,70,.45)) drop-shadow(0 0 24px rgba(255,140,30,.28)); }
+    50%      { filter: drop-shadow(0 0 14px rgba(255,200,90,.7)) drop-shadow(0 0 40px rgba(255,150,40,.45)); }
+  }
+
+  .tag {
+    border: 1px solid rgba(240, 190, 110, .55);
+    padding: .42em 1.15em .36em;
+    font-family: "Cinzel", "Times New Roman", Georgia, serif;
+    font-size: clamp(7px, .72vw, 10px);
+    letter-spacing: .34em;
+    text-indent: .34em;
+    color: rgba(255, 214, 140, .92);
+    text-shadow: 0 0 10px rgba(255, 170, 60, .5);
+  }
+  .keys {
+    font-size: clamp(6px, .62vw, 9px);
+    letter-spacing: .3em;
+    text-indent: .3em;
+    color: rgba(214, 172, 110, .55);
+  }
+
+  .hint {
+    position: absolute; left: 50%; bottom: 4.5vh; transform: translateX(-50%);
+    font-size: 11px; letter-spacing: .26em; white-space: nowrap;
+    color: rgba(226, 186, 122, .42);
+    transition: opacity 1.4s ease;
+  }
+  .hint.hide { opacity: 0; }
+
+  @media (max-aspect-ratio: 3/4) {
+    .title-wrap { top: 4vh; }
+    .title { font-size: clamp(15px, 5.1vw, 28px); letter-spacing: .1em; text-indent: .1em; }
+    .hint { bottom: 2.6vh; font-size: 9px; letter-spacing: .1em; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="interactive gift tree"></canvas>
+
+<div class="hud" id="hud">
+  <div class="title-wrap">
+    <h1 class="title">Merry Christmas</h1>
+    <div class="tag">Add Memories</div>
+    <div class="keys">press w to hide controls</div>
+  </div>
+  <div class="hint" id="hint">move to scatter · click to burst · drag to orbit</div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const TAU = Math.PI * 2;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const hintEl = document.getElementById('hint');
+  const hudEl = document.getElementById('hud');
+
+  const Q = (() => {
+    const mobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const cores = navigator.hardwareConcurrency || 4;
+    const area = window.innerWidth * window.innerHeight;
+    if (mobile || cores <= 4 || area > 2.6e6) return 0.62;
+    return 1;
+  })();
+
+  /* ============================================================
+     精灵：光球 / 礼盒 / 星点 / 顶部宝石
+     ============================================================ */
+  function orbSprite(rgb) {
+    const S = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const [r, gr, b] = rgb;
+    const gd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    gd.addColorStop(0.00, 'rgba(255,255,255,1)');
+    gd.addColorStop(0.14, `rgba(255,248,226,0.98)`);
+    gd.addColorStop(0.34, `rgba(${r},${gr},${b},0.85)`);
+    gd.addColorStop(0.62, `rgba(${r},${gr},${b},0.26)`);
+    gd.addColorStop(1.00, `rgba(${r},${gr},${b},0)`);
+    g.fillStyle = gd;
+    g.beginPath(); g.arc(S / 2, S / 2, S / 2, 0, TAU); g.fill();
+    return c;
+  }
+
+  function dotSprite(rgb) {
+    const S = 16;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const [r, gr, b] = rgb;
+    const gd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+    gd.addColorStop(0.00, `rgba(255,255,255,1)`);
+    gd.addColorStop(0.4, `rgba(${Math.min(255, r + 20)},${Math.min(255, gr + 20)},${Math.min(255, b + 20)},0.85)`);
+    gd.addColorStop(0.75, `rgba(${r},${gr},${b},0.28)`);
+    gd.addColorStop(1.00, `rgba(${r},${gr},${b},0)`);
+    g.fillStyle = gd;
+    g.beginPath(); g.arc(S / 2, S / 2, S / 2, 0, TAU); g.fill();
+    return c;
+  }
+
+  // 小礼盒：顶面亮、正面本色、右侧面暗，凑出立方体感
+  function cubeSprite(base, light, dark) {
+    const S = 64;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const w = 36, h = 36, x0 = 12, y0 = 17, d = 7;
+
+    g.fillStyle = light;
+    g.beginPath();
+    g.moveTo(x0, y0); g.lineTo(x0 + d, y0 - d); g.lineTo(x0 + w + d, y0 - d); g.lineTo(x0 + w, y0);
+    g.closePath(); g.fill();
+
+    g.fillStyle = dark;
+    g.beginPath();
+    g.moveTo(x0 + w, y0); g.lineTo(x0 + w + d, y0 - d); g.lineTo(x0 + w + d, y0 + h - d); g.lineTo(x0 + w, y0 + h);
+    g.closePath(); g.fill();
+
+    g.fillStyle = base;
+    g.fillRect(x0, y0, w, h);
+    return c;
+  }
+
+  function diamondSprite() {
+    const S = 128, R = S / 2;
+    const c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    const gd = g.createLinearGradient(0, 20, 0, S - 20);
+    gd.addColorStop(0, '#fff6d0');
+    gd.addColorStop(0.45, '#ffcc5e');
+    gd.addColorStop(1, '#d98a1a');
+    g.fillStyle = gd;
+    g.beginPath();
+    g.moveTo(R, 16); g.lineTo(S - 18, R); g.lineTo(R, S - 16); g.lineTo(18, R);
+    g.closePath(); g.fill();
+
+    g.strokeStyle = 'rgba(255,245,200,0.85)';
+    g.lineWidth = 3;
+    g.stroke();
+    g.beginPath();
+    g.moveTo(R, 16); g.lineTo(R, S - 16);
+    g.strokeStyle = 'rgba(255,250,220,0.35)';
+    g.lineWidth = 2;
+    g.stroke();
+    return c;
+  }
+
+  const ORB_COL = {
+    gold:   orbSprite([255, 186, 64]),
+    amber:  orbSprite([255, 146, 30]),
+    pale:   orbSprite([255, 240, 200]),
+    red:    orbSprite([255, 92, 72]),
+    teal:   orbSprite([110, 220, 214]),
+  };
+  const DOT_COL = {
+    gold:  dotSprite([255, 196, 90]),
+    pale:  dotSprite([255, 246, 214]),
+    red:   dotSprite([255, 110, 90]),
+    teal:  dotSprite([120, 226, 220]),
+    green: dotSprite([170, 226, 150]),
+  };
+  const CUBE_COL = [
+    cubeSprite('#e8a03a', '#ffcf7c', '#a8641c'),   // 橙
+    cubeSprite('#f2ead6', '#ffffff', '#b9ad91'),   // 米白
+    cubeSprite('#cf4436', '#ff8a78', '#8d271c'),   // 红
+    cubeSprite('#3fa8a6', '#84dedb', '#256f6e'),   // 青
+    cubeSprite('#95c47f', '#cfeebd', '#5f8a4e'),   // 绿
+    cubeSprite('#d8b45a', '#ffe9a6', '#977328'),   // 金
+    cubeSprite('#5f8fd6', '#9dc4ff', '#3a5b91'),   // 蓝
+  ];
+  const DIAMOND = diamondSprite();
+
+  /* ============================================================
+     相机 / 场景常量
+     ============================================================ */
+  let W = 0, H = 0, DPR = 1, focal = 1000;
+
+  const cam = {
+    yaw: 0.55, pitch: 0.15, zoom: 1,
+    baseDist: 25, dist: 25, targetY: 5.0, vYaw: 0,
+  };
+  let camX = 0, camY = 0, camZ = 0;
+  let fx = 0, fy = 0, fz = 0;
+  let rx = 1, ry = 0, rz = 0;
+  let ux = 0, uy = 1, uz = 0;
+
+  const TREE_H = 9.0;
+  const TREE_R = 2.85;
+
+  const orbs = [];    // 光球 / 星点（加法混合）
+  const cubes = [];   // 礼盒（正常混合）
+
+  const prof = (t) => Math.pow(1 - t, 1.05);
+
+  /* ============================================================
+     树体生成
+     ============================================================ */
+  function buildTree() {
+    // 1) 金色光球：占主导
+    const nOrb = Math.round(1900 * Q);
+    for (let i = 0; i < nOrb; i++) {
+      const t = Math.pow(Math.random(), 1.12);
+      const p = prof(t);
+      const ang = Math.random() * TAU;
+      const k = Math.random();
+      let rf;
+      if (k < 0.70) rf = rand(0.74, 1.04);                       // 锥面
+      else if (k < 0.90) rf = Math.sqrt(Math.random()) * 0.74;   // 内部
+      else rf = rand(1.04, 1.16);                                // 零星外溢，柔化轮廓
+      const rr = TREE_R * p * rf * (t < 0.12 ? 1.06 : 1);
+      const big = Math.random() < 0.13;
+      const band = 0.82 + 0.18 * Math.sin(ang - t * 11 + 1.2);    // 螺旋亮带
+      orbs.push({
+        x: Math.cos(ang) * rr,
+        y: Math.max(0, t * TREE_H + rand(-0.09, 0.09)),
+        z: Math.sin(ang) * rr,
+        sz: big ? rand(0.34, 0.62) : rand(0.1, 0.3),
+        a: (big ? rand(0.42, 0.78) : rand(0.3, 0.72)) * band,
+        col: pick(['gold', 'gold', 'gold', 'amber', 'pale', 'red', 'amber', 'red', 'teal']),
+        ph: Math.random() * TAU,
+        fq: rand(0.5, 2.2),
+      });
+    }
+
+    // 2) 细碎星点：提亮体积
+    const nSpark = Math.round(430 * Q);
+    for (let i = 0; i < nSpark; i++) {
+      const t = Math.pow(Math.random(), 1.05);
+      const p = prof(t);
+      const rr = TREE_R * p * rand(0.55, 1.05);
+      const ang = Math.random() * TAU;
+      orbs.push({
+        x: Math.cos(ang) * rr,
+        y: t * TREE_H + rand(-0.1, 0.1),
+        z: Math.sin(ang) * rr,
+        sz: rand(0.025, 0.06),
+        a: rand(0.22, 0.62),
+        col: pick(['pale', 'gold', 'pale', 'teal']),
+        ph: Math.random() * TAU,
+        fq: rand(0.8, 3),
+      });
+    }
+
+    // 3) 彩色礼盒
+    const nCube = Math.round(430 * Q);
+    for (let i = 0; i < nCube; i++) {
+      const t = Math.pow(Math.random(), 1.1);
+      const p = prof(t);
+      const ang = Math.random() * TAU;
+      const k = Math.random();
+      const rf = k < 0.66 ? rand(0.7, 1.04) : (k < 0.88 ? Math.sqrt(Math.random()) * 0.7 : rand(1.02, 1.24));
+      const rr = TREE_R * p * rf * (t < 0.12 ? 1.08 : 1);
+      cubes.push({
+        x: Math.cos(ang) * rr,
+        y: Math.max(0, t * TREE_H + rand(-0.12, 0.12)),
+        z: Math.sin(ang) * rr,
+        sz: rand(0.13, 0.33),
+        a: rand(0.5, 0.88),
+        c: (Math.random() * CUBE_COL.length) | 0,
+        rot: rand(-0.6, 0.6),
+        spin: rand(-0.5, 0.5),
+        ph: Math.random() * TAU,
+      });
+    }
+
+    // 4) 树尖下的金球
+    for (let i = 0; i < Math.round(26 * Q); i++) {
+      const a = Math.random() * TAU, r = rand(0, 0.28);
+      orbs.push({
+        x: Math.cos(a) * r, y: TREE_H + rand(-0.1, 0.35), z: Math.sin(a) * r,
+        sz: rand(0.1, 0.2), a: rand(0.6, 1), col: pick(['gold', 'pale', 'red']),
+        ph: Math.random() * TAU, fq: rand(0.8, 2),
+      });
+    }
+
+    for (const arr of [orbs, cubes]) {
+      for (let i = 0; i < arr.length; i++) {
+        const o = arr[i];
+        o.ox = 0; o.oy = 0; o.oz = 0; o.vx = 0; o.vy = 0; o.vz = 0;
+      }
+    }
+  }
+
+  // 背景星
+  const stars = [];
+  for (let i = 0; i < Math.round(420 * Q); i++) {
+    const th = Math.random() * TAU;
+    const ph = Math.acos(rand(-0.5, 1));
+    const R = rand(40, 70);
+    stars.push({
+      x: R * Math.sin(ph) * Math.cos(th),
+      y: R * Math.cos(ph) + 2,
+      z: R * Math.sin(ph) * Math.sin(th),
+      sz: rand(0.03, 0.12),
+      a: rand(0.15, 0.7),
+      ph: Math.random() * TAU,
+      fq: rand(0.5, 2.4),
+    });
+  }
+
+  buildTree();
+
+  /* ============================================================
+     画布 / 背景 / 泛光缓冲
+     ============================================================ */
+  const backdrop = document.createElement('canvas');
+  const bctx = backdrop.getContext('2d');
+  const b0 = document.createElement('canvas'), b0x = b0.getContext('2d');
+  const b1 = document.createElement('canvas'), b1x = b1.getContext('2d');
+  const b2 = document.createElement('canvas'), b2x = b2.getContext('2d');
+
+  function buildBackdrop() {
+    backdrop.width = canvas.width;
+    backdrop.height = canvas.height;
+    bctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bctx.globalCompositeOperation = 'source-over';
+
+    bctx.fillStyle = '#05070d';
+    bctx.fillRect(0, 0, W, H);
+
+    // 树后的金色气团
+    const rg = bctx.createRadialGradient(W * 0.5, H * 0.56, 0, W * 0.5, H * 0.56, Math.max(W, H) * 0.46);
+    rg.addColorStop(0.00, 'rgba(150, 92, 20, 0.17)');
+    rg.addColorStop(0.35, 'rgba(110, 62, 12, 0.08)');
+    rg.addColorStop(0.70, 'rgba(60, 32, 8, 0.05)');
+    rg.addColorStop(1.00, 'rgba(5, 7, 13, 0)');
+    bctx.fillStyle = rg;
+    bctx.fillRect(0, 0, W, H);
+
+    // 底部暖光
+    const rg2 = bctx.createRadialGradient(W * 0.5, H * 0.83, 0, W * 0.5, H * 0.83, Math.min(W, H) * 0.5);
+    rg2.addColorStop(0.00, 'rgba(190, 118, 26, 0.11)');
+    rg2.addColorStop(1.00, 'rgba(5, 7, 13, 0)');
+    bctx.fillStyle = rg2;
+    bctx.fillRect(0, 0, W, H);
+
+    // 暗角
+    const vg = bctx.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.3, W * 0.5, H * 0.5, Math.max(W, H) * 0.85);
+    vg.addColorStop(0.00, 'rgba(0,0,0,0)');
+    vg.addColorStop(0.62, 'rgba(0,0,0,0.34)');
+    vg.addColorStop(1.00, 'rgba(0,0,0,0.9)');
+    bctx.fillStyle = vg;
+    bctx.fillRect(0, 0, W, H);
+  }
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = Math.max(320, window.innerWidth);
+    H = Math.max(320, window.innerHeight);
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+
+    focal = H * 1.45;
+    const aspect = W / H;
+    cam.baseDist = 25 * (aspect < 1 ? 1 + (1 - aspect) * 0.42 : 1);
+    cam.dist = cam.baseDist * cam.zoom;
+
+    buildBackdrop();
+
+    b0.width = Math.max(2, canvas.width >> 1); b0.height = Math.max(2, canvas.height >> 1);
+    b1.width = Math.max(2, canvas.width >> 2); b1.height = Math.max(2, canvas.height >> 2);
+    b2.width = Math.max(2, b1.width >> 1); b2.height = Math.max(2, b1.height >> 1);
+  }
+
+  function updateCamera(time, dt) {
+    cam.dist += ((cam.baseDist * cam.zoom) - cam.dist) * Math.min(1, dt * 6);
+    const pitch = cam.pitch + Math.sin(time * 0.15) * 0.01;
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const D = cam.dist;
+
+    camX = Math.sin(cam.yaw) * cp * D;
+    camZ = Math.cos(cam.yaw) * cp * D;
+    camY = cam.targetY + sp * D;
+
+    let dx = -camX, dy = cam.targetY - camY, dz = -camZ;
+    const len = Math.hypot(dx, dy, dz) || 1;
+    fx = dx / len; fy = dy / len; fz = dz / len;
+
+    const rl = Math.hypot(fz, fx) || 1;
+    rx = -fz / rl; ry = 0; rz = fx / rl;
+
+    ux = -rz * fy;
+    uy = rz * fx - rx * fz;
+    uz = rx * fy;
+  }
+
+  /* ============================================================
+     交互：指针探针 + 吹散物理
+     ============================================================ */
+  const REPEL_R = 3.6;
+  const REPEL_R2 = REPEL_R * REPEL_R;
+  const REPEL_FORCE = 760;
+  const SPRING = 12;
+  const DAMP = 3.5;
+
+  let probeActive = false;
+  let probeX = 0, probeY = 0, probeZ = 0;
+
+  function setProbe(sx, sy) {
+    const nx = (sx - W * 0.5) / focal;
+    const ny = (H * 0.5 - sy) / focal;
+    let dx = fx + rx * nx + ux * ny;
+    let dy = fy + ry * nx + uy * ny;
+    let dz = fz + rz * nx + uz * ny;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    dx /= l; dy /= l; dz /= l;
+    const t = cam.dist;
+    probeX = camX + dx * t;
+    probeY = camY + dy * t;
+    probeZ = camZ + dz * t;
+    probeActive = true;
+  }
+
+  function updatePhysics(arr, dt) {
+    const px = probeX, py = probeY, pz = probeZ;
+    const active = probeActive;
+    const knead = REPEL_FORCE * dt;
+    const dampK = 1 - DAMP * dt;
+    const springK = SPRING * dt;
+
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i];
+      let ox = p.ox, oy = p.oy, oz = p.oz;
+      let vx = p.vx, vy = p.vy, vz = p.vz;
+      const calm = (ox === 0 && oy === 0 && oz === 0 && vx === 0 && vy === 0 && vz === 0);
+
+      if (calm) {
+        if (!active) continue;
+        const ddx = p.x - px, ddy = p.y - py, ddz = p.z - pz;
+        if (ddx * ddx + ddy * ddy + ddz * ddz > REPEL_R2) continue;
+      }
+
+      if (active) {
+        const ddx = p.x + ox - px, ddy = p.y + oy - py, ddz = p.z + oz - pz;
+        const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+        if (d2 < REPEL_R2) {
+          const d = Math.max(0.25, Math.sqrt(d2));
+          const f = 1 - d / REPEL_R;
+          const k = (f * f * knead) / d;
+          vx += ddx * k; vy += ddy * k; vz += ddz * k;
+        }
+      }
+
+      vx = (vx - ox * springK) * dampK;
+      vy = (vy - oy * springK) * dampK;
+      vz = (vz - oz * springK) * dampK;
+      ox += vx * dt; oy += vy * dt; oz += vz * dt;
+
+      if (Math.abs(ox) + Math.abs(oy) + Math.abs(oz) < 0.0015 &&
+          Math.abs(vx) + Math.abs(vy) + Math.abs(vz) < 0.0015) {
+        ox = oy = oz = vx = vy = vz = 0;
+      }
+      p.ox = ox; p.oy = oy; p.oz = oz;
+      p.vx = vx; p.vy = vy; p.vz = vz;
+    }
+  }
+
+  function burst() {
+    if (!probeActive) return;
+    for (const arr of [orbs, cubes]) {
+      for (let i = 0; i < arr.length; i++) {
+        const p = arr[i];
+        const dx = p.x + p.ox - probeX;
+        const dy = p.y + p.oy - probeY;
+        const dz = p.z + p.oz - probeZ;
+        const d = Math.max(0.3, Math.hypot(dx, dy, dz));
+        if (d > 7.5) continue;
+        const f = 1 - d / 7.5;
+        const k = (f * f * 62) / d;
+        p.vx += dx * k; p.vy += dy * k; p.vz += dz * k;
+      }
+    }
+    shockT = 0;
+  }
+
+  let shockT = -1;
+
+  /* ============================================================
+     绘制
+     ============================================================ */
+  let qKeep = 10, perfAcc = 0, perfN = 0;
+
+  function blit(img, x, y, size, alpha) {
+    if (alpha <= 0.004 || size < 0.4) return;
+    ctx.globalAlpha = alpha > 1 ? 1 : alpha;
+    ctx.drawImage(img, x - size * 0.5, y - size * 0.5, size, size);
+  }
+
+  function drawStars(time) {
+    for (let i = 0; i < stars.length; i++) {
+      const p = stars[i];
+      const dxp = p.x - camX, dyp = p.y - camY, dzp = p.z - camZ;
+      const cz = dxp * fx + dyp * fy + dzp * fz;
+      if (cz < 1.4) continue;
+      const cx = dxp * rx + dzp * rz;
+      const cyy = dxp * ux + dyp * uy + dzp * uz;
+      const sx = W * 0.5 + (cx / cz) * focal;
+      const sy = H * 0.5 - (cyy / cz) * focal;
+      if (sx < -20 || sx > W + 20 || sy < -20 || sy > H + 20) continue;
+      const size = (p.sz * focal) / cz;
+      const tw = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(time * p.fq + p.ph));
+      blit(DOT_COL.pale, sx, sy, size, p.a * tw * 0.8);
+    }
+  }
+
+  function drawOrbs(time) {
+    for (let i = 0; i < orbs.length; i++) {
+      if (i % 10 >= qKeep) continue;
+      const p = orbs[i];
+      const dxp = p.x + p.ox - camX, dyp = p.y + p.oy - camY + Math.sin(time * 0.6 + p.ph) * 0.03;
+      const dzp = p.z + p.oz - camZ;
+      const cz = dxp * fx + dyp * fy + dzp * fz;
+      if (cz < 1.4) continue;
+      const cx = dxp * rx + dzp * rz;
+      const cyy = dxp * ux + dyp * uy + dzp * uz;
+      const sx = W * 0.5 + (cx / cz) * focal;
+      const sy = H * 0.5 - (cyy / cz) * focal;
+      const size = (p.sz * focal) / cz;
+      if (size < 0.5) continue;
+      if (sx < -70 || sx > W + 70 || sy < -70 || sy > H + 70) continue;
+
+      const df = cz < 16 ? 1 : 1 - (cz - 16) * 0.011;
+      const tw = 0.72 + 0.28 * Math.sin(time * p.fq + p.ph);
+      const img = size < 6 ? DOT_COL[p.col] || ORB_COL.gold : ORB_COL[p.col];
+      blit(img, sx, sy, size, p.a * tw * df);
+    }
+  }
+
+  function drawCubes(time) {
+    ctx.globalCompositeOperation = 'source-over';
+    for (let i = 0; i < cubes.length; i++) {
+      if (i % 10 >= qKeep) continue;
+      const p = cubes[i];
+      const dxp = p.x + p.ox - camX, dyp = p.y + p.oy - camY, dzp = p.z + p.oz - camZ;
+      const cz = dxp * fx + dyp * fy + dzp * fz;
+      if (cz < 1.4) continue;
+      const cx = dxp * rx + dzp * rz;
+      const cyy = dxp * ux + dyp * uy + dzp * uz;
+      const sx = W * 0.5 + (cx / cz) * focal;
+      const sy = H * 0.5 - (cyy / cz) * focal;
+      const size = (p.sz * focal) / cz;
+      if (size < 1.1) continue;
+      if (sx < -80 || sx > W + 80 || sy < -80 || sy > H + 80) continue;
+
+      const df = cz < 16 ? 1 : 1 - (cz - 16) * 0.014;
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, p.a * df * 0.92);
+      ctx.translate(sx, sy);
+      ctx.rotate(p.rot + Math.sin(time * p.spin + p.ph) * 0.22);
+      ctx.drawImage(CUBE_COL[p.c], -size * 0.5, -size * 0.5, size, size);
+      ctx.restore();
+    }
+  }
+
+  function drawTopper(time) {
+    const py = TREE_H + 0.62;
+    const dxp = -camX, dyp = py - camY, dzp = -camZ;
+    const cz = dxp * fx + dyp * fy + dzp * fz;
+    if (cz < 1.4) return;
+    const cx = dxp * rx + dzp * rz;
+    const cyy = dxp * ux + dyp * uy + dzp * uz;
+    const sx = W * 0.5 + (cx / cz) * focal;
+    const sy = H * 0.5 - (cyy / cz) * focal;
+
+    const pulse = 1 + 0.07 * Math.sin(time * 2.1);
+    const s = ((1.55 * focal) / cz) * pulse;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.42;
+    const halo = s * 2.2;
+    ctx.drawImage(ORB_COL.gold, sx - halo / 2, sy - halo / 2, halo, halo);
+
+    ctx.globalAlpha = 0.98;
+    ctx.drawImage(DIAMOND, sx - s / 2, sy - s / 2, s, s);
+    ctx.restore();
+
+    // 宝石下的小红球
+    const by = TREE_H + 0.06;
+    const d2 = (by - camY);
+    const cz2 = (-camX) * fx + d2 * fy + (-camZ) * fz;
+    if (cz2 > 1.4) {
+      const cx2 = (-camX) * rx + (-camZ) * rz;
+      const cy2 = (-camX) * ux + d2 * uy + (-camZ) * uz;
+      const bx = W * 0.5 + (cx2 / cz2) * focal;
+      const byy = H * 0.5 - (cy2 / cz2) * focal;
+      const bs = (0.95 * focal) / cz2;
+      ctx.globalCompositeOperation = 'lighter';
+      blit(ORB_COL.red, bx, byy, bs, 0.9);
+    }
+  }
+
+  // 树根的暖光
+  function drawBaseGlow(time) {
+    const dxp = -camX, dyp = -camY + 0.3, dzp = -camZ;
+    const cz = dxp * fx + dyp * fy + dzp * fz;
+    if (cz < 1.4) return;
+    const cx = dxp * rx + dzp * rz;
+    const cyy = dxp * ux + dyp * uy + dzp * uz;
+    const sx = W * 0.5 + (cx / cz) * focal;
+    const sy = H * 0.5 - (cyy / cz) * focal;
+    const pulse = 0.85 + 0.15 * Math.sin(time * 1.5);
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.10 * pulse;
+    const w = (16 * focal) / cz;
+    ctx.drawImage(ORB_COL.amber, sx - w / 2, sy - w * 0.2, w, w * 0.4);
+    ctx.restore();
+  }
+
+  let pointerSX = -999, pointerSY = -999;
+
+  function drawProbe(dt, time) {
+    if (!probeActive) { shockT = -1; return; }
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    // 指针处柔光
+    const s = 62 + 10 * Math.sin(time * 3.2);
+    ctx.globalAlpha = 0.06;
+    ctx.drawImage(ORB_COL.pale, pointerSX - s, pointerSY - s, s * 2, s * 2);
+
+    // 点击冲击环
+    if (shockT >= 0) {
+      shockT += dt;
+      const k = shockT / 0.55;
+      if (k >= 1) {
+        shockT = -1;
+      } else {
+        const r = 26 + k * 300;
+        ctx.globalAlpha = (1 - k) * 0.3;
+        ctx.strokeStyle = 'rgba(255, 208, 124, 1)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(pointerSX, pointerSY, r, 0, TAU);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function bloom() {
+    b0x.setTransform(1, 0, 0, 1, 0, 0);
+    b0x.globalCompositeOperation = 'copy'; b0x.globalAlpha = 1;
+    b0x.drawImage(canvas, 0, 0, b0.width, b0.height);
+
+    b1x.setTransform(1, 0, 0, 1, 0, 0);
+    b1x.globalCompositeOperation = 'copy'; b1x.globalAlpha = 1;
+    b1x.drawImage(b0, 0, 0, b1.width, b1.height);
+
+    b2x.setTransform(1, 0, 0, 1, 0, 0);
+    b2x.globalCompositeOperation = 'copy';
+    b2x.drawImage(b1, 0, 0, b2.width, b2.height);
+
+    b1x.globalCompositeOperation = 'lighter';
+    b1x.globalAlpha = 0.7;
+    b1x.drawImage(b2, 0, 0, b1.width, b1.height);
+    b1x.globalAlpha = 1;
+
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.11;
+    ctx.drawImage(b0, 0, 0, canvas.width, canvas.height);
+    ctx.globalAlpha = 0.2;
+    ctx.drawImage(b1, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+  }
+
+  /* ============================================================
+     交互绑定
+     ============================================================ */
+  let dragging = false, dragX = 0, dragY = 0, idleTimer = 0, hintHidden = false;
+  const isTouch = 'ontouchstart' in window || (matchMedia && matchMedia('(hover: none)').matches);
+
+  function hideHint() {
+    if (hintHidden) return;
+    hintHidden = true;
+    hintEl.classList.add('hide');
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    dragging = true; dragX = e.clientX; dragY = e.clientY; cam.vYaw = 0;
+    canvas.setPointerCapture?.(e.pointerId);
+    setProbe(e.clientX, e.clientY);
+    pointerSX = e.clientX; pointerSY = e.clientY;
+    burst();
+    hideHint();
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    setProbe(e.clientX, e.clientY);
+    pointerSX = e.clientX; pointerSY = e.clientY;
+    if (!dragging) return;
+    const dx = e.clientX - dragX, dy = e.clientY - dragY;
+    dragX = e.clientX; dragY = e.clientY;
+    cam.yaw -= dx * 0.005;
+    cam.vYaw = -dx * 0.011;
+    cam.pitch = clamp(cam.pitch + dy * 0.0028, -0.05, 0.5);
+    idleTimer = 0;
+  });
+
+  const endDrag = () => {
+    dragging = false;
+    idleTimer = 0;
+    if (isTouch) probeActive = false;
+  };
+  canvas.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+  canvas.addEventListener('pointerleave', () => { endDrag(); probeActive = false; });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    cam.zoom = clamp(cam.zoom * Math.exp(-e.deltaY * 0.0009), 0.65, 2.0);
+    hideHint();
+  }, { passive: false });
+
+  canvas.addEventListener('dblclick', () => {
+    cam.zoom = 1; cam.yaw = 0.55; cam.pitch = 0.15; cam.vYaw = 0;
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'w' || e.key === 'W') hudEl.classList.toggle('hidden');
+  });
+
+  window.addEventListener('resize', resize);
+
+  if (isTouch) hintEl.textContent = 'drag to orbit · tap to burst';
+
+  /* ============================================================
+     主循环
+     ============================================================ */
+  const params = new URLSearchParams(location.search);
+  let time = parseFloat(params.get('t')) || 0;
+  const dbgProbe = params.get('probe');
+  let last = performance.now();
+
+  resize();
+
+  function frame(now) {
+    let dt = (now - last) / 1000;
+    last = now;
+    if (!isFinite(dt) || dt <= 0) dt = 1 / 60;
+    dt = Math.min(dt, 0.05);
+    time += dt;
+
+    if (!dragging) { cam.yaw += cam.vYaw * dt; cam.vYaw *= 0.92; }
+    idleTimer += dt;
+    if (!dragging && idleTimer > 1.6) cam.yaw += 0.055 * dt;
+
+    updateCamera(time, dt);
+
+    if (dbgProbe) {
+      const q = dbgProbe.split(',');
+      setProbe(parseFloat(q[0]) || W * 0.5, parseFloat(q[1]) || H * 0.5);
+    }
+
+    updatePhysics(orbs, dt);
+    updatePhysics(cubes, dt);
+
+    perfAcc += dt; perfN++;
+    if (perfN >= 90) {
+      const avg = perfAcc / perfN;
+      perfAcc = 0; perfN = 0;
+      if (avg > 0.026) qKeep = qKeep > 7 ? 7 : 5;
+    }
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.drawImage(backdrop, 0, 0, W, H);
+
+    ctx.globalCompositeOperation = 'lighter';
+    drawStars(time);
+    drawBaseGlow(time);
+    drawOrbs(time);
+    drawTopper(time);
+    drawProbe(dt, time);
+    ctx.globalAlpha = 1;
+
+    drawCubes(time);
+
+    bloom();
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+
+    requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+  setTimeout(hideHint, 9000);
+})();
+</script>
+</body>
+</html>
